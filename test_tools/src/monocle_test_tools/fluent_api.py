@@ -2,6 +2,7 @@ from functools import wraps
 import inspect
 import os
 from typing import Optional, Union
+from monocle_test_tools import OkahuEval
 from monocle_test_tools.schema import Evaluation
 from .comparer.comparer_manager import get_comparer
 from .comparer.base_comparer import BaseComparer
@@ -31,7 +32,8 @@ def collect_assertions(func):
             fluent_chain.append(signature)
         fluent_chain.append(func_signature)
         asserter = TraceAssertion(filtered_spans=asserter._filtered_spans, fluent_chain=fluent_chain,
-                            is_assertion_failed=asserter.is_assertion_failed, _eval=asserter._eval)
+                            is_assertion_failed=asserter.is_assertion_failed, _eval=asserter._eval, 
+                            _eval_trace_id=asserter._eval_trace_id)
         try:
             func(asserter, *args, **kwargs)
         except AssertionError as e:
@@ -43,6 +45,7 @@ class TraceAssertion():
     
     """Fluent API for asserting properties on Monocle traces."""
     _eval:Optional[Union[str, BaseEval]]  = None
+    _eval_trace_id: Optional[str] = None  # Track current trace being evaluated
     _comparer: Union[str, BaseComparer] = DefaultComparer()
     _assertion_errors: list[dict[str, any]] = []
 
@@ -53,8 +56,10 @@ class TraceAssertion():
         return traceAssertion
 
     def __init__(self, filtered_spans:Optional[list[Span]] = None, fluent_chain:list[str] = []
-                ,is_assertion_failed:bool = False, _eval:Optional[Union[str, BaseEval]] = None) -> None:
+                ,is_assertion_failed:bool = False, _eval:Optional[Union[str, BaseEval]] = None,
+                _eval_trace_id:Optional[str] = None) -> None:
         self._eval:Union[str, BaseEval]  = _eval
+        self._eval_trace_id = _eval_trace_id  # Preserve trace ID across instances
         self.validator = MonocleValidator()
         if filtered_spans is None:
             if self.validator.spans is not None and len(self.validator.spans) > 0:
@@ -87,6 +92,12 @@ class TraceAssertion():
         return self._assertion_errors
 
     def cleanup(self) -> None:
+        """Cleanup including trace deletion"""
+        # Delete trace if it was exported
+        if isinstance(self._eval, OkahuEval) and self._eval_trace_id:
+            self._eval.delete_trace(self._eval_trace_id)
+            self._eval_trace_id = None
+        
         self.validator.cleanup()
         self._filtered_spans = None
         TraceAssertion._assertion_errors = []
@@ -274,12 +285,17 @@ class TraceAssertion():
         return self
 
     @collect_assertions
-    def check_eval(self, eval_name:str, expected_eval:str, fact_name:Optional[str] = "traces") -> 'TraceAssertion':
+    def check_eval(self, eval_name: str, expected_eval: str, fact_name: Optional[str] = "traces") -> 'TraceAssertion':
         """Validate evaluation results for the current filtered spans."""
         if self._eval is None:
             raise AssertionError("No evaluator configured. Call with_evaluation before check_eval.")
         if not self._filtered_spans:
             raise AssertionError("No spans available for evaluation. Chain a span selector before check_eval.")
+        
+        # Export trace on FIRST eval call only
+        if isinstance(self._eval, OkahuEval) and self._eval_trace_id is None:
+            self._eval_trace_id = self._eval.export_trace(self._filtered_spans)
+        
         eval_result = self._eval.evaluate(filtered_spans=self._filtered_spans, eval_name=eval_name, fact_name=fact_name)
         if eval_result != expected_eval:
             raise AssertionError(f"Evaluation '{eval_name}' did not match expected result. Expected {expected_eval}. Received {eval_result}.")
