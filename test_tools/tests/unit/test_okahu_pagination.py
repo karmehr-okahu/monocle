@@ -5,6 +5,7 @@ sent neither, so every enumeration stopped at the server's DEFAULT_PAGE_SIZE of
 100 with no log line, no tally and no exception -- backlog issue #242.
 """
 import pytest
+import requests
 
 from monocle_test_tools.okahu_span_loader import OkahuSpanLoader
 
@@ -306,6 +307,43 @@ class TestGetTraceIdsPaginates:
             OkahuSpanLoader.get_trace_ids("wf", fact_name="agent_sessions")
 
         assert do_get["calls"] == []
+
+
+class TestGetFactIdsNamespace:
+    """get_fact_ids hardcoded /workflows/, while get_trace_ids has always tried
+    'apps' first via _get_resource.
+
+    On stage /api/v1/workflows 404s entirely and only /apps exists -- but
+    /workflows/<app>/facts/<fact>/ids answers 200 with an EMPTY list rather than
+    404, so get_fact_ids returned [] for every app-namespace tenant and nothing
+    raised. The same silent-emptiness class as the pagination defect itself.
+    """
+
+    @pytest.fixture(name="do_get")
+    def do_get_fixture(self, monkeypatch):
+        state = {"urls": [], "not_found": set()}
+
+        def fake_do_get(url, headers, params=None, timeout=None, context_msg=""):
+            state["urls"].append(url)
+            if any(marker in url for marker in state["not_found"]):
+                response = requests.Response()
+                response.status_code = 404
+                raise requests.HTTPError("404", response=response)
+            return {"fact_ids": {"e-1": {}}, "fact_count": 1}
+
+        monkeypatch.setattr(OkahuSpanLoader, "_do_get", staticmethod(fake_do_get))
+        return state
+
+    def test_it_tries_the_apps_namespace_first(self, do_get):
+        OkahuSpanLoader.get_fact_ids("wf", "inferences")
+
+        assert do_get["urls"][0].endswith("/api/v1/apps/wf/facts/inferences/ids")
+
+    def test_it_falls_back_to_workflows_on_404(self, do_get):
+        do_get["not_found"] = {"/api/v1/apps/"}
+
+        assert OkahuSpanLoader.get_fact_ids("wf", "inferences") == ["e-1"]
+        assert do_get["urls"][-1].endswith("/api/v1/workflows/wf/facts/inferences/ids")
 
 
 class TestPageSizeThreading:

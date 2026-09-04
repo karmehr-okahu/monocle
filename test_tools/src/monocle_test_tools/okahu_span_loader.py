@@ -531,8 +531,14 @@ class OkahuSpanLoader:
     ) -> List[str]:
         """Fetch the ids of every fact of one level in a workflow.
 
-        Uses:  GET /api/v1/workflows/<wf>/facts/<fact_name>/ids
+        Uses:  GET /api/v1/<apps|workflows>/<wf>/facts/<fact_name>/ids
                ?duration_fact=<fact_name>&breakdown_filter=<fact_name>
+
+        The namespace is resolved the same way get_trace_ids resolves it, trying
+        ``apps`` before ``workflows``. This used to be hardcoded to ``workflows``,
+        which quietly returned nothing on a deployment that keys its tenants
+        under ``apps``: that path answers 200 with an empty ``fact_ids`` rather
+        than 404, so every fact level came back empty and nothing raised.
 
         This is the entry point for any fact level above a trace -- agent
         requests, sessions, conversations. A trace-level set comes from
@@ -567,16 +573,15 @@ class OkahuSpanLoader:
         page_size = OkahuSpanLoader._resolve_page_size(page_size)
         base = OkahuSpanLoader._get_api_base(endpoint)
         headers = OkahuSpanLoader._get_headers(api_key)
-        url = f"{base}/api/v1/workflows/{workflow_name}/facts/{fact_name}/ids"
         params = {"duration_fact": fact_name, "breakdown_filter": fact_name}
         params.update(OkahuSpanLoader._window_params(start_time, end_time))
         params.update(OkahuSpanLoader._eval_param(eval_filter))
         context_msg = f"{fact_name} ids in workflow '{workflow_name}'"
 
         def fetch(page_params):
-            return OkahuSpanLoader._do_get(
-                url, headers, params=page_params, timeout=timeout,
-                context_msg=context_msg)
+            return OkahuSpanLoader._get_resource(
+                base, f"{workflow_name}/facts/{fact_name}/ids", headers,
+                params=page_params, timeout=timeout, context_msg=context_msg)
 
         def extract(envelope):
             """The ids of one page. fact_ids is keyed by id, so its keys ARE the
