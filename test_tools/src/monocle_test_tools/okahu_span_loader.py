@@ -32,6 +32,12 @@ class OkahuSpanLoader:
     # those timing out; OKAHU_API_TIMEOUT raises or lowers it per deployment.
     DEFAULT_API_TIMEOUT = 120
 
+    # The server's own DEFAULT_PAGE_SIZE is 100 (common/api/util.py:34) and its
+    # MAX_PAGE_SIZE is 1000, enforced with a 400 rather than a clamp. 200 halves
+    # the round trips and matches what the eval-tune-kit clients already request.
+    DEFAULT_PAGE_SIZE = 200
+    MAX_PAGE_SIZE = 1000
+
     @staticmethod
     def _get_api_base(endpoint: Optional[str] = None) -> str:
         """Return the Okahu API base URL (no trailing slash).
@@ -73,6 +79,32 @@ class OkahuSpanLoader:
                 raw, OkahuSpanLoader.DEFAULT_API_TIMEOUT)
             return OkahuSpanLoader.DEFAULT_API_TIMEOUT
         return seconds
+
+    @staticmethod
+    def _resolve_page_size(page_size: Optional[int] = None) -> int:
+        """Rows per page: an explicit value if given, else DEFAULT_PAGE_SIZE.
+
+        parse_page_size on the server (common/api/util.py:558-570) answers an
+        out-of-range value with HTTP 400 rather than clamping, and that 400
+        surfaces mid-collection with no indication of which parameter caused it.
+        Failing here names the bound instead.
+
+        No environment override, unlike the timeout: a timeout is a deployment
+        property, while page size is a tuning detail already exposed as a
+        parameter on setup_test_cases.
+        """
+        if page_size is None:
+            return OkahuSpanLoader.DEFAULT_PAGE_SIZE
+        # bool before int: isinstance(True, int) is True, so page_size=True would
+        # otherwise pass as a page size of 1.
+        if isinstance(page_size, bool) or not isinstance(page_size, int):
+            raise ValueError(
+                f"page_size must be an int, got {type(page_size).__name__}")
+        if not 1 <= page_size <= OkahuSpanLoader.MAX_PAGE_SIZE:
+            raise ValueError(
+                f"page_size must be between 1 and {OkahuSpanLoader.MAX_PAGE_SIZE} "
+                f"(the Okahu server's MAX_PAGE_SIZE), got {page_size}")
+        return page_size
 
     @staticmethod
     def _get_headers(api_key: Optional[str] = None) -> dict:
