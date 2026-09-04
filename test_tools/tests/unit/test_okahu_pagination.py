@@ -243,3 +243,66 @@ class TestGetFactIdsPaginates:
 
         with pytest.raises(ConnectionError, match="unexpected 'fact_ids'"):
             OkahuSpanLoader.get_fact_ids("wf", "agent_requests")
+
+
+class TestGetTraceIdsPaginates:
+    """/traces keys a LIST of trace objects. Same protocol as /facts/<n>/ids."""
+
+    @pytest.fixture(name="do_get")
+    def do_get_fixture(self, monkeypatch):
+        state = {"calls": [], "pages": []}
+
+        def fake_do_get(url, headers, params=None, timeout=None, context_msg=""):
+            state["calls"].append(dict(params or {}))
+            return state["pages"].pop(0)
+
+        monkeypatch.setattr(OkahuSpanLoader, "_do_get", staticmethod(fake_do_get))
+        return state
+
+    def test_it_walks_every_page(self, do_get):
+        do_get["pages"] = [
+            _envelope(["t1", "t2"], fact_count=3, next_page_token="tok-2"),
+            _envelope(["t3"], fact_count=3),
+        ]
+
+        assert OkahuSpanLoader.get_trace_ids("wf") == ["t1", "t2", "t3"]
+        assert do_get["calls"][1]["next_page_token"] == "tok-2"
+
+    def test_the_window_and_filter_survive_every_page(self, do_get):
+        do_get["pages"] = [
+            _envelope(["t1"], fact_count=2, next_page_token="tok-2"),
+            _envelope(["t2"], fact_count=2),
+        ]
+
+        OkahuSpanLoader.get_trace_ids("wf", "agent_sessions", "sess_1",
+                                      start_time="a", end_time="b",
+                                      eval_filter="frustration")
+
+        for call in do_get["calls"]:
+            assert call["duration_fact"] == "agent_sessions"
+            assert call["fact_ids"] == "sess_1"
+            assert call["start_time"] == "a"
+            assert call["eval"] == "frustration"
+
+    def test_a_short_walk_warns(self, do_get, caplog):
+        do_get["pages"] = [_envelope(["t1"], fact_count=309)]
+
+        assert OkahuSpanLoader.get_trace_ids("wf") == ["t1"]
+        assert "1 of 309" in caplog.text
+
+    def test_a_bad_page_size_raises_before_any_request(self, do_get):
+        do_get["pages"] = [_envelope([], fact_count=0)]
+
+        with pytest.raises(ValueError, match="between 1 and 1000"):
+            OkahuSpanLoader.get_trace_ids("wf", page_size=0)
+
+        assert do_get["calls"] == []
+
+    def test_half_a_fact_filter_still_raises_before_any_request(self, do_get):
+        """The existing guard must run before the pager touches the network."""
+        do_get["pages"] = [_envelope([], fact_count=0)]
+
+        with pytest.raises(ValueError, match="fact_name and fact_id"):
+            OkahuSpanLoader.get_trace_ids("wf", fact_name="agent_sessions")
+
+        assert do_get["calls"] == []

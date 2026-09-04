@@ -603,6 +603,7 @@ class OkahuSpanLoader:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         eval_filter: Optional[str] = None,
+        page_size: Optional[int] = None,
     ) -> List[str]:
         """Fetch trace IDs from Okahu filtered by a fact.
 
@@ -625,9 +626,11 @@ class OkahuSpanLoader:
             api_key: Okahu API key override.
             timeout: Request timeout in seconds. Defaults to
                 OKAHU_API_TIMEOUT, then ``DEFAULT_API_TIMEOUT`` (120).
+            page_size: Rows per page. Defaults to DEFAULT_PAGE_SIZE (200);
+                the server rejects anything above MAX_PAGE_SIZE (1000).
 
         Returns:
-            A list of trace ID strings.
+            A list of trace ID strings, across every page.
 
         Raises:
             ValueError: If exactly one of fact_name / fact_id is given. Half a
@@ -638,6 +641,7 @@ class OkahuSpanLoader:
                 "fact_name and fact_id must be given together or not at all; "
                 f"got fact_name={fact_name!r}, fact_id={fact_id!r}")
 
+        page_size = OkahuSpanLoader._resolve_page_size(page_size)
         base = OkahuSpanLoader._get_api_base(endpoint)
         headers = OkahuSpanLoader._get_headers(api_key)
         params = {}
@@ -646,24 +650,34 @@ class OkahuSpanLoader:
             params["fact_ids"] = fact_id
         params.update(OkahuSpanLoader._window_params(start_time, end_time))
         params.update(OkahuSpanLoader._eval_param(eval_filter))
+        context_msg = (f"traces for {fact_name}='{fact_id}' in workflow "
+                       f"'{workflow_name}'" if fact_name
+                       else f"traces in workflow '{workflow_name}'")
 
-        data = OkahuSpanLoader._get_resource(
-            base, f"{workflow_name}/traces", headers, params=params, timeout=timeout,
-            context_msg=(f"traces for {fact_name}='{fact_id}' in workflow '{workflow_name}'"
-                         if fact_name else f"traces in workflow '{workflow_name}'")
-        )
+        def fetch(page_params):
+            # _get_resource re-resolves the apps/workflows namespace per page.
+            # When 'apps' is correct it returns on the first attempt, so this
+            # costs nothing; only the fallback path spends one debug-level 404
+            # per page, which is cheaper than threading resolved state through
+            # the pager.
+            return OkahuSpanLoader._get_resource(
+                base, f"{workflow_name}/traces", headers, params=page_params,
+                timeout=timeout, context_msg=context_msg)
 
-        trace_list = OkahuSpanLoader._unwrap_list(
-            data, ("traces", "data", "results"),
-            context_msg=f"traces for {fact_name}='{fact_id}'"
-        )
+        def extract(envelope):
+            trace_list = OkahuSpanLoader._unwrap_list(
+                envelope, ("traces", "data", "results"),
+                context_msg=f"traces for {fact_name}='{fact_id}'")
+            ids = []
+            for item in trace_list:
+                if isinstance(item, dict) and "trace_id" in item:
+                    ids.append(item["trace_id"])
+                elif isinstance(item, str):
+                    ids.append(item)
+            return ids
 
-        trace_ids = []
-        for item in trace_list:
-            if isinstance(item, dict) and "trace_id" in item:
-                trace_ids.append(item["trace_id"])
-            elif isinstance(item, str):
-                trace_ids.append(item)
+        trace_ids = OkahuSpanLoader._collect_paged(
+            fetch, params, page_size, extract, context_msg)
 
         logger.debug(
             "Found %d trace(s) for %s='%s' in workflow '%s'",
