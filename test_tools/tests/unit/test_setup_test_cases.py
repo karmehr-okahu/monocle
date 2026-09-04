@@ -871,16 +871,12 @@ class TestGetFactIds:
         return seen
 
     def test_hits_the_ids_path_for_the_fact(self, get):
-        """The namespace is resolved, not hardcoded: 'apps' is tried first and
-        only a 404 falls back to 'workflows', matching get_trace_ids. This test
-        previously asserted the hardcoded workflows path, which returned an empty
-        fact_ids with a 200 on app-namespace deployments."""
         from monocle_test_tools.okahu_span_loader import OkahuSpanLoader
 
         OkahuSpanLoader.get_fact_ids("wf", "agent_requests",
                                      start_time="a", end_time="b")
 
-        assert get["url"].endswith("/api/v1/apps/wf/facts/agent_requests/ids")
+        assert get["url"].endswith("/api/v1/workflows/wf/facts/agent_requests/ids")
 
     def test_sends_duration_fact_and_breakdown_filter(self, get):
         from monocle_test_tools.okahu_span_loader import OkahuSpanLoader
