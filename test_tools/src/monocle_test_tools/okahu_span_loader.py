@@ -521,6 +521,7 @@ class OkahuSpanLoader:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         eval_filter: Optional[str] = None,
+        page_size: Optional[int] = None,
     ) -> List[str]:
         """Fetch the ids of every fact of one level in a workflow.
 
@@ -551,32 +552,44 @@ class OkahuSpanLoader:
             eval_filter: Optional ``eval`` filter narrowing the result set to
                 facts carrying it -- a bare eval name, or the API's
                 ``name:label;name:label`` form.
+            page_size: Rows per page. Defaults to DEFAULT_PAGE_SIZE (200);
+                the server rejects anything above MAX_PAGE_SIZE (1000).
 
         Returns:
-            The fact ids, in the order the server returned them.
+            The fact ids across every page, in the order the server returned them.
         """
+        page_size = OkahuSpanLoader._resolve_page_size(page_size)
         base = OkahuSpanLoader._get_api_base(endpoint)
         headers = OkahuSpanLoader._get_headers(api_key)
         url = f"{base}/api/v1/workflows/{workflow_name}/facts/{fact_name}/ids"
         params = {"duration_fact": fact_name, "breakdown_filter": fact_name}
         params.update(OkahuSpanLoader._window_params(start_time, end_time))
         params.update(OkahuSpanLoader._eval_param(eval_filter))
+        context_msg = f"{fact_name} ids in workflow '{workflow_name}'"
 
-        data = OkahuSpanLoader._do_get(
-            url, headers, params=params, timeout=timeout,
-            context_msg=f"{fact_name} ids in workflow '{workflow_name}'")
+        def fetch(page_params):
+            return OkahuSpanLoader._do_get(
+                url, headers, params=page_params, timeout=timeout,
+                context_msg=context_msg)
 
-        fact_ids = (data or {}).get("fact_ids")
-        if isinstance(fact_ids, dict):
-            return list(fact_ids)
-        if isinstance(fact_ids, list):
-            return [item.get("fact_id") if isinstance(item, dict) else item
-                    for item in fact_ids]
-        if fact_ids is None:
-            return []
-        raise ConnectionError(
-            f"Okahu returned an unexpected 'fact_ids' for {fact_name} in workflow "
-            f"'{workflow_name}': {type(fact_ids).__name__}")
+        def extract(envelope):
+            """The ids of one page. fact_ids is keyed by id, so its keys ARE the
+            ids and the order is the server's."""
+            fact_ids = (envelope.get("fact_ids")
+                        if isinstance(envelope, dict) else None)
+            if isinstance(fact_ids, dict):
+                return list(fact_ids)
+            if isinstance(fact_ids, list):
+                return [item.get("fact_id") if isinstance(item, dict) else item
+                        for item in fact_ids]
+            if fact_ids is None:
+                return []
+            raise ConnectionError(
+                f"Okahu returned an unexpected 'fact_ids' for {fact_name} in "
+                f"workflow '{workflow_name}': {type(fact_ids).__name__}")
+
+        return OkahuSpanLoader._collect_paged(
+            fetch, params, page_size, extract, context_msg)
 
     @staticmethod
     def get_trace_ids(

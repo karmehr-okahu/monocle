@@ -188,3 +188,58 @@ class TestReconciliation:
             lambda params: _envelope(["a"]), {}, 200, _extract_traces, "ctx")
 
         assert "incomplete" not in caplog.text
+
+
+class TestGetFactIdsPaginates:
+    """/facts/<name>/ids keys fact_ids to a DICT, not a list -- the one shape
+    difference from /traces. The protocol around it is identical."""
+
+    @pytest.fixture(name="do_get")
+    def do_get_fixture(self, monkeypatch):
+        state = {"calls": [], "pages": []}
+
+        def fake_do_get(url, headers, params=None, timeout=None, context_msg=""):
+            state["calls"].append(dict(params or {}))
+            return state["pages"].pop(0)
+
+        monkeypatch.setattr(OkahuSpanLoader, "_do_get", staticmethod(fake_do_get))
+        return state
+
+    def test_it_walks_every_page(self, do_get):
+        do_get["pages"] = [
+            {"fact_ids": {"e-1": {}, "e-2": {}}, "fact_count": 3,
+             "next_page_token": "tok-2"},
+            {"fact_ids": {"e-3": {}}, "fact_count": 3},
+        ]
+
+        assert OkahuSpanLoader.get_fact_ids("wf", "agent_requests") == [
+            "e-1", "e-2", "e-3"]
+        assert do_get["calls"][1]["next_page_token"] == "tok-2"
+
+    def test_it_sends_the_default_page_size(self, do_get):
+        do_get["pages"] = [{"fact_ids": {}, "fact_count": 0}]
+
+        OkahuSpanLoader.get_fact_ids("wf", "agent_requests")
+
+        assert do_get["calls"][0]["page_size"] == 200
+
+    def test_an_explicit_page_size_is_sent(self, do_get):
+        do_get["pages"] = [{"fact_ids": {}, "fact_count": 0}]
+
+        OkahuSpanLoader.get_fact_ids("wf", "agent_requests", page_size=25)
+
+        assert do_get["calls"][0]["page_size"] == 25
+
+    def test_a_bad_page_size_raises_before_any_request(self, do_get):
+        do_get["pages"] = [{"fact_ids": {}, "fact_count": 0}]
+
+        with pytest.raises(ValueError, match="between 1 and 1000"):
+            OkahuSpanLoader.get_fact_ids("wf", "agent_requests", page_size=5000)
+
+        assert do_get["calls"] == [], "no request may be issued"
+
+    def test_an_unexpected_fact_ids_type_still_raises(self, do_get):
+        do_get["pages"] = [{"fact_ids": "nonsense"}]
+
+        with pytest.raises(ConnectionError, match="unexpected 'fact_ids'"):
+            OkahuSpanLoader.get_fact_ids("wf", "agent_requests")
