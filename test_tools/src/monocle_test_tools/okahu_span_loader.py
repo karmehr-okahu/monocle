@@ -204,6 +204,73 @@ class OkahuSpanLoader:
             f"Expected a list from Okahu ({context_msg}), got: {type(data).__name__}"
         )
 
+    @staticmethod
+    def _iter_pages(fetch, params: dict, page_size: int, context_msg: str = ""):
+        """Yield each response envelope, following the page token to exhaustion.
+
+        A GET/query-params sibling of okahu_eval._iter_eval_report_rows, which
+        walks the same protocol over POST/body. Both endpoints signal the end by
+        omitting next_page_token.
+
+        ``fetch`` is a callable taking the params dict and returning the parsed
+        envelope. It is supplied by the caller because get_trace_ids resolves its
+        namespace through _get_resource while get_fact_ids has a fixed URL.
+
+        The envelope is yielded whole rather than its items, so a caller wanting
+        something other than ids -- get_spans, eventually -- can reuse this.
+        """
+        page_token, seen_tokens = None, set()
+        while True:
+            page_params = {**params, "page_size": page_size}
+            if page_token:
+                # These GET routes read the token as 'next_page_token'; only the
+                # POST /evals/report pager spells it 'page_token'. The wrong name
+                # is not an error -- it is ignored and page 1 is re-served.
+                # Verified in okahu/routes/{traces,facts}.py, both of which do:
+                #   req.query_params.get('next_page_token') or ...('prev_page_token')
+                page_params["next_page_token"] = page_token
+            envelope = fetch(page_params)
+            yield envelope
+
+            # An envelope is not always a dict: some responses are a bare list.
+            page_token = (envelope.get("next_page_token")
+                          if isinstance(envelope, dict) else None)
+            if not page_token:
+                return
+            if page_token in seen_tokens:
+                logger.warning(
+                    "Okahu repeated a page token (%s); stopping the walk after "
+                    "%d pages", context_msg, len(seen_tokens) + 1)
+                return
+            seen_tokens.add(page_token)
+
+    @staticmethod
+    def _collect_paged(fetch, params: dict, page_size: int, extract,
+                       context_msg: str = "") -> list:
+        """Every item across every page, with a warning if the total falls short.
+
+        ``extract`` turns one envelope into its items, which is where the two
+        endpoints differ: /traces keys a list, /facts/<n>/ids keys a dict.
+
+        fact_count is read from every page, so a mid-walk revision by the server
+        takes effect -- and it costs nothing, the envelope is already open.
+        """
+        items, advertised = [], None
+        for envelope in OkahuSpanLoader._iter_pages(
+                fetch, params, page_size, context_msg):
+            items.extend(extract(envelope))
+            if isinstance(envelope, dict) and isinstance(
+                    envelope.get("fact_count"), int):
+                advertised = envelope["fact_count"]
+
+        if advertised is not None and len(items) != advertised:
+            # The defect this exists to kill was silent. Never return a short
+            # list without saying so.
+            logger.warning(
+                "Okahu returned %d of %d advertised (%s); the result is incomplete",
+                len(items), advertised, context_msg)
+        return items
+
     # ------------------------------------------------------------------ #
     #  Public helpers                                                     #
     # ------------------------------------------------------------------ #
