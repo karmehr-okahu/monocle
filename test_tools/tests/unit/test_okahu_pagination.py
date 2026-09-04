@@ -306,3 +306,74 @@ class TestGetTraceIdsPaginates:
             OkahuSpanLoader.get_trace_ids("wf", fact_name="agent_sessions")
 
         assert do_get["calls"] == []
+
+
+class TestPageSizeThreading:
+    """One knob. The eval report and the enumerators must not disagree about
+    page depth, so setup_test_cases' page_size reaches all three."""
+
+    @pytest.fixture(name="seen")
+    def seen_fixture(self, monkeypatch):
+        seen = {"trace": [], "fact": [], "report": []}
+
+        def fake_trace_ids(workflow_name, fact_name=None, fact_id=None, **kwargs):
+            seen["trace"].append(kwargs)
+            return ["abc123"]
+
+        def fake_fact_ids(workflow_name, fact_name, **kwargs):
+            seen["fact"].append(kwargs)
+            return ["e-1"]
+
+        def fake_spans(*args, **kwargs):
+            return []
+
+        monkeypatch.setattr(OkahuSpanLoader, "get_trace_ids",
+                            staticmethod(fake_trace_ids))
+        monkeypatch.setattr(OkahuSpanLoader, "get_fact_ids",
+                            staticmethod(fake_fact_ids))
+        monkeypatch.setattr(OkahuSpanLoader, "get_spans", staticmethod(fake_spans))
+
+        from monocle_test_tools.evals.okahu_eval import OkahuEval
+
+        def fake_report(**kwargs):
+            seen["report"].append(kwargs)
+            return {}
+
+        monkeypatch.setattr(OkahuEval, "_eval_report_by_fact",
+                            staticmethod(fake_report))
+        return seen
+
+    def test_the_default_reaches_the_trace_enumerator(self, seen):
+        OkahuSpanLoader.setup_test_cases(
+            workflow_name="wf", start_time="a", end_time="b")
+
+        assert seen["trace"][0]["page_size"] == 200
+
+    def test_an_explicit_size_reaches_the_trace_enumerator(self, seen):
+        OkahuSpanLoader.setup_test_cases(
+            workflow_name="wf", start_time="a", end_time="b", page_size=25)
+
+        assert seen["trace"][0]["page_size"] == 25
+
+    def test_it_reaches_the_fact_enumerator(self, seen):
+        OkahuSpanLoader.setup_test_cases(
+            workflow_name="wf", start_time="a", end_time="b",
+            fact_name="agentic_turns", page_size=25)
+
+        assert seen["fact"][0]["page_size"] == 25
+
+    def test_it_reaches_the_eval_report_too(self, seen):
+        OkahuSpanLoader.setup_test_cases(
+            workflow_name="wf", start_time="a", end_time="b",
+            check_eval="sentiment", page_size=25)
+
+        assert seen["report"][0]["page_size"] == 25
+
+    def test_it_reaches_the_per_fact_trace_lookup(self, seen):
+        """_fact_spans looks up one fact's traces; a fact spanning more than a
+        page would otherwise load a partial span set."""
+        OkahuSpanLoader.setup_test_cases(
+            workflow_name="wf", start_time="a", end_time="b",
+            fact_name="agentic_turns", page_size=25)
+
+        assert seen["trace"][0]["page_size"] == 25

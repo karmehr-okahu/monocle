@@ -282,7 +282,7 @@ class OkahuSpanLoader:
                          eval_filter: Optional[str] = None,
                          check_eval: Optional[Union[bool, str]] = None,
                          compare_eval: Optional[str] = None,
-                         page_size: int = 100) -> list:
+                         page_size: int = DEFAULT_PAGE_SIZE) -> list:
         """Build FluentTestCases from the traces recorded for a workflow.
 
         One test case per fact in the window. How the facts are found depends on
@@ -364,7 +364,9 @@ class OkahuSpanLoader:
                 eval-tuning question: does a new template reproduce a golden
                 one's labels? Requires ``check_eval`` to be a name, since there
                 is otherwise nothing to attach the borrowed label to.
-            page_size: Rows per page (server max 1000).
+            page_size: Rows per page for the trace/fact enumeration and the eval
+                report alike -- one knob, so they cannot disagree about page
+                depth. Server maximum 1000.
 
         Returns:
             One FluentTestCase per fact that has at least one labelled eval.
@@ -404,11 +406,12 @@ class OkahuSpanLoader:
         if mapped_fact_name == "traces":
             fact_ids = [normalize_fact_id(tid) for tid in cls.get_trace_ids(
                 workflow_name, start_time=start_time, end_time=end_time,
-                eval_filter=eval_filter)]
+                eval_filter=eval_filter, page_size=page_size)]
         else:
             fact_ids = cls.get_fact_ids(
                 workflow_name, mapped_fact_name,
-                start_time=start_time, end_time=end_time, eval_filter=eval_filter)
+                start_time=start_time, end_time=end_time,
+                eval_filter=eval_filter, page_size=page_size)
         if not fact_ids:
             return []
 
@@ -461,7 +464,8 @@ class OkahuSpanLoader:
             try:
                 spans = cls._fact_spans(
                     workflow_name, fact_id, mapped_fact_name=mapped_fact_name,
-                    start_time=start_time, end_time=end_time, eval_filter=eval_filter)
+                    start_time=start_time, end_time=end_time,
+                    eval_filter=eval_filter, page_size=page_size)
             except cls._LOAD_ERRORS as exc:
                 test_cases.append(FluentTestCase(
                     name=fact_id, input=fact,
@@ -489,7 +493,8 @@ class OkahuSpanLoader:
 
     @classmethod
     def _fact_spans(cls, workflow_name, fact_id, *, mapped_fact_name,
-                    start_time, end_time, eval_filter=None) -> list:
+                    start_time, end_time, eval_filter=None,
+                    page_size=None) -> list:
         """Every span belonging to one fact.
 
         A trace-level fact is one trace, so its spans are one call. A higher
@@ -503,7 +508,8 @@ class OkahuSpanLoader:
         spans = []
         for trace_id in cls.get_trace_ids(
                 workflow_name, mapped_fact_name, fact_id,
-                start_time=start_time, end_time=end_time, eval_filter=eval_filter):
+                start_time=start_time, end_time=end_time,
+                eval_filter=eval_filter, page_size=page_size):
             spans.extend(cls.get_spans(
                 workflow_name, trace_id, start_time=start_time, end_time=end_time))
         return spans
