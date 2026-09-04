@@ -623,6 +623,10 @@ Since these cases carry agents and tools as well as evals, they feed the selecto
 
 Each fact costs a request for its spans, plus one per fact above trace level to find its traces, plus one for the report. A wide window is a lot of calls — freeze the result to JSON if you will re-run it.
 
+**Every page is walked.** Discovery used to read only the server's first page of 100 and stop, with no indication more existed — a window holding 309 traces produced 100 test cases, and the rest were not dropped or reported, they simply never appeared. `page_size` (default 200, server maximum 1000) now governs the trace enumeration, the fact enumeration and the eval report alike, so they cannot disagree about page depth. If a walk still comes back short of the count the server advertises, a warning names both numbers rather than handing back a short list in silence.
+
+Since a wide window now yields every fact rather than the first hundred, it also costs proportionally more collection time — roughly one span request per trace. Freeze to JSON, or narrow the window, if that matters to you.
+
 **A fact that will not load does not cost you the window.** `setup_test_cases` runs at collection time, so raising would mean *no* tests run at all. Instead the fact is still returned, carrying the reason, and the first `testcase=` call it reaches fails with it — so it shows up as one failing test named after the fact while every other case runs normally. The bulk eval report is one call for all facts, so if *it* fails the reason is recorded against each of them.
 
 ```
