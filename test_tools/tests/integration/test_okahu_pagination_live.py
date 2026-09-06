@@ -86,3 +86,34 @@ def test_an_explicit_page_size_reaches_the_same_total():
                                            page_size=25)
 
     assert sorted(wide) == sorted(narrow)
+
+
+def test_the_default_ceiling_refuses_an_oversized_window(monkeypatch):
+    """This window holds ~3368 inferences, comfortably past the default 1000,
+    so the ceiling engages against real data rather than a mock."""
+    monkeypatch.delenv("OKAHU_MAX_FACTS", raising=False)
+
+    with pytest.raises(AssertionError, match="exceeding max_facts=1000"):
+        OkahuSpanLoader.setup_test_cases(
+            workflow_name=WORKFLOW, start_time=START, end_time=END,
+            fact_name="inferences")
+
+
+def test_raising_the_ceiling_lets_the_same_window_through(monkeypatch):
+    """Enumeration alone must still work at that size -- only span loading is
+    expensive, and setup_test_cases is not reached here."""
+    monkeypatch.delenv("OKAHU_MAX_FACTS", raising=False)
+
+    ids = OkahuSpanLoader.get_fact_ids(WORKFLOW, "inferences",
+                                       start_time=START, end_time=END)
+
+    assert len(ids) > 1000, "the window must exceed the default to prove anything"
+    assert len(set(ids)) == len(ids)
+
+
+def test_the_env_var_overrides_the_default(monkeypatch):
+    monkeypatch.setenv("OKAHU_MAX_FACTS", "5")
+
+    with pytest.raises(AssertionError, match="exceeding max_facts=5"):
+        OkahuSpanLoader.setup_test_cases(
+            workflow_name=WORKFLOW, start_time=START, end_time=END)

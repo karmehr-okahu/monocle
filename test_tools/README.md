@@ -627,6 +627,8 @@ Each fact costs a request for its spans, plus one per fact above trace level to 
 
 Since a wide window now yields every fact rather than the first hundred, it also costs proportionally more collection time — roughly one span request per trace. Freeze to JSON, or narrow the window, if that matters to you.
 
+**Discovery is capped.** Because every page is now walked, a wide window can yield thousands of facts — and each one costs a span request plus, with `check_eval`, an eval. `max_facts` bounds that, defaulting to 1000 and overridable per call or with the `OKAHU_MAX_FACTS` environment variable (the same variable `okahu_filtered_eval` already honours). A window holding more raises, naming the count and the ceiling, rather than silently returning the first 1000 — a truncated subset is what the pagination fix set out to remove. Narrow the window, or raise the ceiling deliberately. The cap applies to `setup_test_cases` only: loading one named session or scope with `with_trace_source` is never bounded by it.
+
 **A fact that will not load does not cost you the window.** `setup_test_cases` runs at collection time, so raising would mean *no* tests run at all. Instead the fact is still returned, carrying the reason, and the first `testcase=` call it reaches fails with it — so it shows up as one failing test named after the fact while every other case runs normally. The bulk eval report is one call for all facts, so if *it* fails the reason is recorded against each of them.
 
 ```
@@ -1289,7 +1291,7 @@ validator.check_duration_limits(max_duration=30.0, units="seconds", span_type="w
 | `MONOCLE_TRACE_OUTPUT_PATH` | Directory for file-based trace output | `.monocle/test_traces` |
 | `OKAHU_API_KEY` | API key for Okahu evaluation and trace export | — |
 | `OKAHU_EVALUATION_ENDPOINT` | Override the Okahu evaluation endpoint | `https://eval.okahu.co/api` |
-| `OKAHU_MAX_FACTS` | Runaway guard for time-window (filtered) evals: fail loudly if a filter discovers more than this many facts (see [Time-window evaluation](#time-window-filtered-evaluation)) | `1000` |
+| `OKAHU_MAX_FACTS` | Runaway guard: fail loudly if a time-window (filtered) eval discovers, or `setup_test_cases` enumerates, more than this many facts (see [Time-window evaluation](#time-window-filtered-evaluation)) | `1000` |
 | `MONOCLE_EVAL_MATRIX` | Set (to any value, optionally a path) to enable the opt-in eval-result-matrix recorder (see [Eval result matrix](#eval-result-matrix)). Off when unset | unset (off) |
 | `LOCAL_RUN_ID` | Run identifier applied to all spans in a session | ISO datetime at session start |
 
