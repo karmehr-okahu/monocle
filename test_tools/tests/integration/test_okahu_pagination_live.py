@@ -117,3 +117,27 @@ def test_the_env_var_overrides_the_default(monkeypatch):
     with pytest.raises(AssertionError, match="exceeding max_facts=5"):
         OkahuSpanLoader.setup_test_cases(
             workflow_name=WORKFLOW, start_time=START, end_time=END)
+
+
+# Narrower than START: ~58 traces, comfortably under the default ceiling.
+NARROW_START = "2026-06-01T00:00:00.000Z"
+
+
+def test_a_window_under_the_ceiling_still_builds_every_case(monkeypatch):
+    """The happy path, live.
+
+    The other two ceiling tests both assert refusal, which would still pass if
+    the guard rejected everything. This one proves a window under the limit is
+    undisturbed: every advertised fact becomes a loaded case.
+    """
+    monkeypatch.delenv("OKAHU_MAX_FACTS", raising=False)
+
+    advertised = _advertised(f"{WORKFLOW}/traces", {"start_time": NARROW_START})
+    assert advertised < 1000, (
+        "this window must sit under the ceiling or the test proves nothing")
+
+    cases = OkahuSpanLoader.setup_test_cases(
+        workflow_name=WORKFLOW, start_time=NARROW_START, end_time=END)
+
+    assert len(cases) == advertised, "every fact under the ceiling becomes a case"
+    assert all(c.load_error is None for c in cases), "no case may fail to load"
