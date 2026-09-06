@@ -377,3 +377,61 @@ class TestPageSizeThreading:
             fact_name="agentic_turns", page_size=25)
 
         assert seen["trace"][0]["page_size"] == 25
+
+
+class TestResolveMaxFacts:
+    """The ceiling on how many facts one discovery run may yield.
+
+    Mirrors okahu_filtered_eval.py:319 -- same parameter name, same env var,
+    same default -- so a deployment already setting OKAHU_MAX_FACTS gets the
+    same bound from discovery.
+    """
+
+    def test_default_is_1000(self, monkeypatch):
+        monkeypatch.delenv("OKAHU_MAX_FACTS", raising=False)
+
+        assert OkahuSpanLoader._resolve_max_facts(None) == 1000
+
+    def test_env_overrides_the_default(self, monkeypatch):
+        monkeypatch.setenv("OKAHU_MAX_FACTS", "50")
+
+        assert OkahuSpanLoader._resolve_max_facts(None) == 50
+
+    def test_an_explicit_argument_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("OKAHU_MAX_FACTS", "50")
+
+        assert OkahuSpanLoader._resolve_max_facts(25) == 25
+
+    def test_an_argument_equal_to_the_default_is_still_honoured(self, monkeypatch):
+        """A numeric default would make this indistinguishable from taking the
+        default, which is why the signature defaults to None."""
+        monkeypatch.setenv("OKAHU_MAX_FACTS", "50")
+
+        assert OkahuSpanLoader._resolve_max_facts(1000) == 1000
+
+    @pytest.mark.parametrize("bad_env", ["", "   ", "abc", "0", "-1", "1.5"])
+    def test_an_unusable_env_value_is_logged_and_ignored(self, monkeypatch, caplog,
+                                                         bad_env):
+        """A misconfigured variable must not stop discovery -- same tolerance as
+        OKAHU_API_TIMEOUT, and deliberately unlike okahu_filtered_eval's bare
+        int() which would raise."""
+        monkeypatch.setenv("OKAHU_MAX_FACTS", bad_env)
+
+        assert OkahuSpanLoader._resolve_max_facts(None) == 1000
+        if bad_env.strip():
+            assert "OKAHU_MAX_FACTS" in caplog.text
+
+    @pytest.mark.parametrize("bad", [0, -1, -100])
+    def test_a_non_positive_argument_raises(self, bad):
+        with pytest.raises(ValueError, match="at least 1"):
+            OkahuSpanLoader._resolve_max_facts(bad)
+
+    def test_a_string_argument_raises(self):
+        with pytest.raises(ValueError, match="must be an int"):
+            OkahuSpanLoader._resolve_max_facts("1000")
+
+    def test_a_bool_argument_raises(self):
+        """isinstance(True, int) is True in Python, so max_facts=True would
+        otherwise resolve to a ceiling of 1."""
+        with pytest.raises(ValueError, match="must be an int"):
+            OkahuSpanLoader._resolve_max_facts(True)

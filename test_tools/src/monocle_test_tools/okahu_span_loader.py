@@ -38,6 +38,10 @@ class OkahuSpanLoader:
     DEFAULT_PAGE_SIZE = 200
     MAX_PAGE_SIZE = 1000
 
+    # The ceiling okahu_filtered_eval applies to a filtered run (evals/
+    # okahu_filtered_eval.py:319), so both paths bound a window the same way.
+    DEFAULT_MAX_FACTS = 1000
+
     @staticmethod
     def _get_api_base(endpoint: Optional[str] = None) -> str:
         """Return the Okahu API base URL (no trailing slash).
@@ -105,6 +109,46 @@ class OkahuSpanLoader:
                 f"page_size must be between 1 and {OkahuSpanLoader.MAX_PAGE_SIZE} "
                 f"(the Okahu server's MAX_PAGE_SIZE), got {page_size}")
         return page_size
+
+    @staticmethod
+    def _resolve_max_facts(max_facts: Optional[int] = None) -> int:
+        """The most facts one discovery run may yield: argument, else env, else 1000.
+
+        Mirrors the ceiling okahu_filtered_eval applies to a filtered run
+        (evals/okahu_filtered_eval.py:319), so a deployment already setting
+        OKAHU_MAX_FACTS gets the same bound here. Kept as a separate
+        implementation rather than a shared import because okahu_span_loader and
+        the evals modules form an import cycle -- see the local imports in
+        setup_test_cases.
+
+        An unusable OKAHU_MAX_FACTS -- empty, non-numeric, or not positive -- is
+        logged and ignored rather than stopping discovery, matching how
+        OKAHU_API_TIMEOUT resolves. Deliberately more tolerant than
+        okahu_filtered_eval, whose bare int() would raise on a bad value.
+        """
+        if max_facts is not None:
+            # bool before int: isinstance(True, int) is True, so max_facts=True
+            # would otherwise pass as a ceiling of 1.
+            if isinstance(max_facts, bool) or not isinstance(max_facts, int):
+                raise ValueError(
+                    f"max_facts must be an int, got {type(max_facts).__name__}")
+            if max_facts < 1:
+                raise ValueError(f"max_facts must be at least 1, got {max_facts}")
+            return max_facts
+
+        raw = (os.environ.get("OKAHU_MAX_FACTS") or "").strip()
+        if not raw:
+            return OkahuSpanLoader.DEFAULT_MAX_FACTS
+        try:
+            ceiling = int(raw)
+        except ValueError:
+            ceiling = 0
+        if ceiling < 1:
+            logger.warning(
+                "OKAHU_MAX_FACTS=%r is not a positive integer; using %d",
+                raw, OkahuSpanLoader.DEFAULT_MAX_FACTS)
+            return OkahuSpanLoader.DEFAULT_MAX_FACTS
+        return ceiling
 
     @staticmethod
     def _get_headers(api_key: Optional[str] = None) -> dict:
