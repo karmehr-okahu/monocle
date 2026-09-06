@@ -435,3 +435,148 @@ class TestResolveMaxFacts:
         otherwise resolve to a ceiling of 1."""
         with pytest.raises(ValueError, match="must be an int"):
             OkahuSpanLoader._resolve_max_facts(True)
+
+
+class TestMaxFactsCeiling:
+    """A window yielding more facts than the ceiling is refused, not truncated.
+
+    Truncating would hand back a silent subset -- the exact defect the
+    pagination fix removes. The guard fails loudly and says how to proceed.
+    """
+
+    @pytest.fixture(name="seen")
+    def seen_fixture(self, monkeypatch):
+        """Stub the enumerators so a test can choose how many facts exist."""
+        state = {"trace_kwargs": [], "fact_kwargs": [], "ids": ["t1", "t2"]}
+
+        def fake_trace_ids(workflow_name, fact_name=None, fact_id=None, **kwargs):
+            state["trace_kwargs"].append(kwargs)
+            return list(state["ids"])
+
+        def fake_fact_ids(workflow_name, fact_name, **kwargs):
+            state["fact_kwargs"].append(kwargs)
+            return list(state["ids"])
+
+        monkeypatch.setattr(OkahuSpanLoader, "get_trace_ids",
+                            staticmethod(fake_trace_ids))
+        monkeypatch.setattr(OkahuSpanLoader, "get_fact_ids",
+                            staticmethod(fake_fact_ids))
+        monkeypatch.setattr(OkahuSpanLoader, "get_spans",
+                            staticmethod(lambda *a, **k: []))
+        return state
+
+    def test_under_the_ceiling_passes(self, seen, monkeypatch):
+        monkeypatch.delenv("OKAHU_MAX_FACTS", raising=False)
+        seen["ids"] = [f"t{i}" for i in range(999)]
+
+        cases = OkahuSpanLoader.setup_test_cases(
+            workflow_name="wf", start_time="a", end_time="b")
+
+        assert len(cases) == 999
+
+    def test_exactly_at_the_ceiling_passes(self, seen, monkeypatch):
+        """> ceiling, not >= : 1000 is allowed, matching okahu_filtered_eval."""
+        monkeypatch.delenv("OKAHU_MAX_FACTS", raising=False)
+        seen["ids"] = [f"t{i}" for i in range(1000)]
+
+        cases = OkahuSpanLoader.setup_test_cases(
+            workflow_name="wf", start_time="a", end_time="b")
+
+        assert len(cases) == 1000
+
+    def test_one_over_the_ceiling_raises(self, seen, monkeypatch):
+        monkeypatch.delenv("OKAHU_MAX_FACTS", raising=False)
+        seen["ids"] = [f"t{i}" for i in range(1001)]
+
+        with pytest.raises(AssertionError, match="exceeding max_facts=1000"):
+            OkahuSpanLoader.setup_test_cases(
+                workflow_name="wf", start_time="a", end_time="b")
+
+    def test_the_message_names_the_count_the_ceiling_and_the_env_var(self, seen):
+        seen["ids"] = [f"t{i}" for i in range(3368)]
+
+        with pytest.raises(AssertionError) as exc:
+            OkahuSpanLoader.setup_test_cases(
+                workflow_name="wf", start_time="a", end_time="b", max_facts=1000)
+
+        message = str(exc.value)
+        assert "3368" in message
+        assert "max_facts=1000" in message
+        assert "OKAHU_MAX_FACTS" in message
+        assert "narrow the time window" in message
+        assert "wf" in message
+
+    def test_an_explicit_argument_is_honoured(self, seen):
+        seen["ids"] = [f"t{i}" for i in range(11)]
+
+        with pytest.raises(AssertionError, match="exceeding max_facts=10"):
+            OkahuSpanLoader.setup_test_cases(
+                workflow_name="wf", start_time="a", end_time="b", max_facts=10)
+
+    def test_the_env_var_is_honoured(self, seen, monkeypatch):
+        monkeypatch.setenv("OKAHU_MAX_FACTS", "5")
+        seen["ids"] = [f"t{i}" for i in range(6)]
+
+        with pytest.raises(AssertionError, match="exceeding max_facts=5"):
+            OkahuSpanLoader.setup_test_cases(
+                workflow_name="wf", start_time="a", end_time="b")
+
+    def test_it_applies_to_non_trace_fact_levels_too(self, seen, monkeypatch):
+        monkeypatch.delenv("OKAHU_MAX_FACTS", raising=False)
+        seen["ids"] = [f"e-{i}" for i in range(1001)]
+
+        with pytest.raises(AssertionError, match="exceeding max_facts=1000"):
+            OkahuSpanLoader.setup_test_cases(
+                workflow_name="wf", start_time="a", end_time="b",
+                fact_name="agentic_turns")
+
+    def test_a_bad_max_facts_raises_before_any_enumeration(self, seen):
+        """Resolved before the enumerators run, so a bad argument costs no request."""
+        with pytest.raises(ValueError, match="at least 1"):
+            OkahuSpanLoader.setup_test_cases(
+                workflow_name="wf", start_time="a", end_time="b", max_facts=0)
+
+        assert seen["trace_kwargs"] == [], "no enumeration may be issued"
+
+    def test_the_enumerators_are_not_given_a_ceiling(self, seen):
+        """The whole design: the ceiling never enters the shared span-loading
+        plumbing, so no other caller of get_trace_ids/get_fact_ids can inherit
+        it. See load_by_scope, import_traces, from_okahu_scope."""
+        OkahuSpanLoader.setup_test_cases(
+            workflow_name="wf", start_time="a", end_time="b", max_facts=10)
+
+        assert "max_facts" not in seen["trace_kwargs"][0]
+
+
+class TestPlumbingHasNoCeiling:
+    """Structural guard: if someone later threads max_facts into the shared
+    loaders, these fail. That coupling is what made the first attempt at this
+    feature silently cap load_by_scope and _fact_spans."""
+
+    @pytest.mark.parametrize("name", ["get_trace_ids", "get_fact_ids",
+                                      "_collect_paged", "_iter_pages"])
+    def test_the_shared_loaders_take_no_max_facts(self, name):
+        import inspect
+
+        params = inspect.signature(getattr(OkahuSpanLoader, name)).parameters
+        assert "max_facts" not in params, (
+            f"{name} must stay free of the ceiling -- it is shared with "
+            f"load_by_scope, import_traces and from_okahu_scope")
+
+    def test_feature_b_loads_more_traces_than_the_ceiling(self, monkeypatch):
+        """load_by_scope fetches one scope's traces. It must not be bounded by a
+        discovery ceiling, no matter how many traces that scope holds."""
+        monkeypatch.delenv("OKAHU_MAX_FACTS", raising=False)
+        trace_ids = [f"t{i}" for i in range(1500)]
+
+        def fake_do_get(url, headers, params=None, timeout=None, context_msg=""):
+            return _envelope(trace_ids, fact_count=1500)
+
+        monkeypatch.setattr(OkahuSpanLoader, "_do_get", staticmethod(fake_do_get))
+        monkeypatch.setattr(OkahuSpanLoader, "get_spans",
+                            staticmethod(lambda *a, **k: ["span"]))
+
+        spans = OkahuSpanLoader.load_by_scope(
+            workflow_name="wf", scope_name="test_id", scope_id="run-42")
+
+        assert len(spans) == 1500

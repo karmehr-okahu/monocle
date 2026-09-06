@@ -326,7 +326,8 @@ class OkahuSpanLoader:
                          eval_filter: Optional[str] = None,
                          check_eval: Optional[Union[bool, str]] = None,
                          compare_eval: Optional[str] = None,
-                         page_size: int = DEFAULT_PAGE_SIZE) -> list:
+                         page_size: int = DEFAULT_PAGE_SIZE,
+                         max_facts: Optional[int] = None) -> list:
         """Build FluentTestCases from the traces recorded for a workflow.
 
         One test case per fact in the window. How the facts are found depends on
@@ -411,6 +412,12 @@ class OkahuSpanLoader:
             page_size: Rows per page for the trace/fact enumeration and the eval
                 report alike -- one knob, so they cannot disagree about page
                 depth. Server maximum 1000.
+            max_facts: The most facts this window may yield. Defaults to
+                OKAHU_MAX_FACTS, then DEFAULT_MAX_FACTS (1000). A wider window
+                raises, naming the count and the variable, rather than
+                generating thousands of cases -- each fact costs a span request
+                and, with check_eval, an eval. Bounds the fact enumeration only;
+                the spans beneath one fact are not counted.
 
         Returns:
             One FluentTestCase per fact that has at least one labelled eval.
@@ -447,6 +454,9 @@ class OkahuSpanLoader:
         # A trace IS its own fact, so the trace list is the fact list. Any level
         # above a trace -- agent requests, sessions -- is enumerated by its own
         # ids API, and each of those facts spans one or more traces.
+        # Resolved before enumeration so a bad argument fails without a request.
+        ceiling = cls._resolve_max_facts(max_facts)
+
         if mapped_fact_name == "traces":
             fact_ids = [normalize_fact_id(tid) for tid in cls.get_trace_ids(
                 workflow_name, start_time=start_time, end_time=end_time,
@@ -456,6 +466,22 @@ class OkahuSpanLoader:
                 workflow_name, mapped_fact_name,
                 start_time=start_time, end_time=end_time,
                 eval_filter=eval_filter, page_size=page_size)
+
+        # Paginating the enumerators removed an accidental ceiling: they used to
+        # stop at the server's first page of 100. Every fact here costs a span
+        # request and, with check_eval, an eval, so an oversized window is
+        # refused before any of that -- never truncated, which would hand back a
+        # silent subset.
+        #
+        # Deliberately checked HERE rather than inside the enumerators: they are
+        # shared with load_by_scope, import_traces and from_okahu_scope, which
+        # load one named fact and have no runaway to guard against.
+        if len(fact_ids) > ceiling:
+            raise AssertionError(
+                f"Okahu discovered {len(fact_ids)} '{fact_name}' facts in workflow "
+                f"'{workflow_name}', exceeding max_facts={ceiling} (set "
+                f"OKAHU_MAX_FACTS to raise the ceiling, or narrow the time window).")
+
         if not fact_ids:
             return []
 
