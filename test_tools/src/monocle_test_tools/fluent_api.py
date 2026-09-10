@@ -1466,7 +1466,7 @@ class TraceAssertion():
         return None, eval_name
 
     @collect_assertions
-    def check_eval(self, eval_name:Optional[Union[str, Path]] = None, expected:Optional[Union[str, list[str]]] = None, not_expected:Optional[Union[str, list[str]]] = None, fact_name:Optional[str] = "traces", message:Optional[str] = None, template_path:Optional[Union[str, Path]] = None, *, template:Optional[dict] = None, min_facts:int = 1, fail_threshold:int = 0, max_facts:Optional[int] = None, testcase:Optional[Union[FluentTestCase, dict]] = None) -> 'TraceAssertion':
+    def check_eval(self, eval_name:Optional[Union[str, Path]] = None, expected:Optional[Union[str, list[str]]] = None, not_expected:Optional[Union[str, list[str]]] = None, fact_name:Optional[str] = "traces", message:Optional[str] = None, template_path:Optional[Union[str, Path]] = None, *, template:Optional[dict] = None, min_facts:int = 1, fail_threshold:int = 0, max_facts:Optional[int] = None, testcase:Optional[Union[FluentTestCase, dict]] = None, evidence_scope:Optional[dict] = None) -> 'TraceAssertion':
         """Validate evaluation results for the current filtered spans.
 
         Provide exactly one of:
@@ -1497,6 +1497,14 @@ class TraceAssertion():
         eval_name, template_path = self._apply_eval_type(eval_name, template_path, template)
 
         filter_scope = getattr(self, "_okahu_filter", None)
+        # evidence_scope is wired only through the span path (a single custom
+        # template on the current spans). Reject it with testcase= / filtered mode
+        # so it is never silently ignored there.
+        if evidence_scope is not None and (testcase is not None or filter_scope is not None):
+            raise ValueError(
+                "evidence_scope is only supported in span mode with a custom "
+                "template; it is not yet wired for testcase= or a time-window "
+                "(filtered) source.")
         if testcase is not None:
             if filter_scope is not None:
                 raise ValueError(
@@ -1523,7 +1531,7 @@ class TraceAssertion():
         failures, fact_records = self._check_eval_one(
             eval_name=eval_name, expected=expected, not_expected=not_expected,
             fact_name=fact_name, template_path=template_path, template=template,
-            message=message)
+            message=message, evidence_scope=evidence_scope)
         TraceAssertion._eval_report = build_filtered_report(
             expected, not_expected, fact_records, job_id=None)
         self._raise_eval_failures(eval_name, failures, len(fact_records), message)
@@ -1585,7 +1593,7 @@ class TraceAssertion():
             + "".join(f"{os.linesep}  - {failure}" for failure in failures))
 
     def _check_eval_one(self, *, eval_name, expected, not_expected, fact_name,
-                        template_path, template, message=None) -> tuple:
+                        template_path, template, message=None, evidence_scope=None) -> tuple:
         """Run one eval against the current spans and return its outcome.
 
         Returns rather than raises so a caller running several evals can report
@@ -1669,7 +1677,7 @@ class TraceAssertion():
         # the results matrix must show every one of them.
         TraceAssertion._eval_stashes = TraceAssertion._eval_stashes + [TraceAssertion._last_eval]
 
-        eval_result, explanation = self._eval.evaluate(filtered_spans=self._filtered_spans, eval_name=eval_name, fact_name=fact_name, template=template)
+        eval_result, explanation = self._eval.evaluate(filtered_spans=self._filtered_spans, eval_name=eval_name, fact_name=fact_name, template=template, evidence_scope=evidence_scope)
 
         self._last_eval.update(
             label=eval_result,

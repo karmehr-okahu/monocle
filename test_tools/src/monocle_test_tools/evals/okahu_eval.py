@@ -32,6 +32,21 @@ def _eval_base_url() -> str:
 # OKAHU_EVAL_TIME_PAD_SECONDS if a deployment needs a tighter or wider window.
 DEFAULT_EVAL_TIME_PAD_SECONDS = 8 * 60 * 60      # 8 hours
 
+# Maximal evidence scope: every eval-eligible span type, both events, all roles.
+# Passing this to check_eval(evidence_scope=...) reproduces today's broad default
+# while exercising the evidence_scope code path — a convenient full-scope starting
+# point to trim when testing narrower scopes. group_by is omitted so it fits any
+# fact_name (the backend only soft-warns on a group_by/fact_name mismatch).
+FULL_EVIDENCE_SCOPE = {
+    "span_types": [
+        "agentic.turn", "inference", "inference.framework",
+        "agentic.invocation", "agentic.tool.invocation", "agentic.mcp.invocation",
+        "embedding", "embedding.modelapi", "retrieval", "retrieval.embedding",
+    ],
+    "roles": ["system", "user", "assistant", "tool"],
+    "events": ["input", "output"],
+}
+
 class OkahuEval(BaseEval):
     last_judge_output: dict = {}
     last_total_tokens: Optional[int] = None
@@ -506,7 +521,7 @@ class OkahuEval(BaseEval):
 
         return job_id, label, explanation, eval_result
 
-    def evaluate(self, filtered_spans: Optional[list[Span]] = [], eval_name: Optional[str] = "", fact_name: Optional[str] = "traces", eval_args: dict = {}, template: Optional[dict] = None) -> Union[str, dict]:
+    def evaluate(self, filtered_spans: Optional[list[Span]] = [], eval_name: Optional[str] = "", fact_name: Optional[str] = "traces", eval_args: dict = {}, template: Optional[dict] = None, evidence_scope: Optional[dict] = None) -> Union[str, dict]:
         if template:
             eval_name = template.get("name", "custom_eval")
         elif not eval_name:
@@ -558,6 +573,10 @@ class OkahuEval(BaseEval):
 
         if template:
             payload = {"template": template}
+            # evidence_scope is a body sibling to `template`; the eval service only
+            # accepts it with a custom template (never a builtin template_name).
+            if evidence_scope:
+                payload["evidence_scope"] = evidence_scope
         else:
             payload = {"template_name": eval_name}
         label = None
