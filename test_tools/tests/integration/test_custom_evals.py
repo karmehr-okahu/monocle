@@ -60,5 +60,44 @@ async def test_custom_template_agentic_sessions(monocle_trace_asserter):
     )
 
 
+@pytest.mark.asyncio
+async def test_custom_template_evidence_scope(monocle_trace_asserter):
+    """Custom template + evidence_scope scaffold.
+
+    The scope below lists EVERYTHING (all span types, roles, events), which
+    reproduces the broad default while exercising the evidence_scope path. To
+    test a lever, delete lines from `evidence_scope` (e.g. drop "input", drop the
+    "tool" role, or narrow span_types) and re-run — deploy the backend first.
+    Change `fact_name` to run against a different fact; keep `group_by` matching
+    it (or delete `group_by` to avoid the soft mismatch warning).
+    """
+    evidence_scope = {
+        "span_types": [
+            "agentic.turn",
+            "inference",
+            "inference.framework",
+            "agentic.invocation",
+            "agentic.tool.invocation",
+            "agentic.mcp.invocation",
+            "embedding",
+            "embedding.modelapi",
+            "retrieval",
+            "retrieval.embedding",
+        ],
+        "roles": ["system", "user", "assistant", "tool"],
+        "events": ["input", "output"],
+        "group_by": "traces",  # keep matching fact_name below, or delete this line
+    }
+    await monocle_trace_asserter.run_agent_async(
+        root_agent, "google_adk", "Book a flight from San Jose to Seattle for 27th Nov 2025.",
+    )
+    monocle_trace_asserter.with_evaluation("okahu").check_eval(
+        template_path=TEMPLATE_PATH,
+        fact_name="traces",
+        evidence_scope=evidence_scope,
+        expected="valid",
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
