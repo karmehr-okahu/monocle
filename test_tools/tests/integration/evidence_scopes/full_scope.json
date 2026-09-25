@@ -1,0 +1,17 @@
+{
+    "span_types": [
+        "agentic.turn",
+        "inference",
+        "inference.framework",
+        "agentic.invocation",
+        "agentic.tool.invocation",
+        "agentic.mcp.invocation",
+        "embedding",
+        "embedding.modelapi",
+        "retrieval",
+        "retrieval.embedding"
+    ],
+    "roles": ["system", "user", "assistant", "tool"],
+    "events": ["input", "output"],
+    "group_by": "traces"
+}

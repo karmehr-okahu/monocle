@@ -6,6 +6,9 @@ from test_common.adk_travel_agent import root_agent
 # All four tests share this custom template (classifies user input as
 # valid / ambiguous / invalid relative to the agent's inferred purpose).
 TEMPLATE_PATH = str(Path(__file__).parent / "custom_templates" / "user_input_validity.json")
+# Route 1: an evidence_scope supplied as a JSON file on disk (loaded the same way
+# TEMPLATE_PATH is). The file holds the full scope; trim it to narrow evidence.
+EVIDENCE_SCOPE_PATH = str(Path(__file__).parent / "evidence_scopes" / "full_scope.json")
 
 
 @pytest.mark.asyncio
@@ -95,6 +98,27 @@ async def test_custom_template_evidence_scope(monocle_trace_asserter):
         template_path=TEMPLATE_PATH,
         fact_name="traces",
         evidence_scope=evidence_scope,
+        expected="valid",
+    )
+
+
+@pytest.mark.asyncio
+async def test_custom_template_evidence_scope_from_file(monocle_trace_asserter):
+    """Route 1: evidence_scope loaded from a JSON file via evidence_scope_path.
+
+    Same behavior as test_custom_template_evidence_scope above, but the scope is
+    read from EVIDENCE_SCOPE_PATH (either a bare scope object or the
+    {"evidence_scope": {...}} request-body shape) instead of being spelled out
+    inline. To test a lever, edit the file — drop "input", drop the "tool" role,
+    or narrow span_types — and re-run; deploy the backend first.
+    """
+    await monocle_trace_asserter.run_agent_async(
+        root_agent, "google_adk", "Book a flight from San Jose to Seattle for 27th Nov 2025.",
+    )
+    monocle_trace_asserter.with_evaluation("okahu").check_eval(
+        template_path=TEMPLATE_PATH,
+        fact_name="traces",
+        evidence_scope_path=EVIDENCE_SCOPE_PATH,
         expected="valid",
     )
 

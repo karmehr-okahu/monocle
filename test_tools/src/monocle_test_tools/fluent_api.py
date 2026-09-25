@@ -1465,8 +1465,45 @@ class TraceAssertion():
                 "'template_path' or 'template'.")
         return None, eval_name
 
+    @staticmethod
+    def _load_evidence_scope_file(evidence_scope_path:Union[str, Path]) -> dict:
+        """Load an ``evidence_scope`` dict from a JSON file.
+
+        The file-based counterpart to passing ``evidence_scope`` inline, mirroring
+        how ``template_path`` loads a custom template from disk. Either shape is
+        accepted:
+          - the bare scope object, e.g.
+            ``{"span_types": [...], "roles": [...], "events": [...]}``; or
+          - the request-body shape ``{"evidence_scope": {...}}``, whose single
+            outer key is unwrapped so the inner dict is what reaches evaluate().
+
+        A missing file or invalid JSON surfaces as AssertionError, matching the
+        error contract of ``template_path`` (so it is collected by
+        @collect_assertions rather than raised out of the fluent chain).
+        """
+        path_obj = Path(evidence_scope_path)
+        if not path_obj.is_file():
+            raise AssertionError(f"Evidence scope file not found: {evidence_scope_path}")
+        try:
+            loaded = json.loads(path_obj.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                f"Evidence scope file is not valid JSON: {evidence_scope_path} — {exc}"
+            ) from exc
+        if (
+            isinstance(loaded, dict)
+            and set(loaded.keys()) == {"evidence_scope"}
+            and isinstance(loaded["evidence_scope"], dict)
+        ):
+            loaded = loaded["evidence_scope"]
+        if not isinstance(loaded, dict):
+            raise AssertionError(
+                f"Evidence scope file must contain a JSON object, got "
+                f"{type(loaded).__name__}: {evidence_scope_path}")
+        return loaded
+
     @collect_assertions
-    def check_eval(self, eval_name:Optional[Union[str, Path]] = None, expected:Optional[Union[str, list[str]]] = None, not_expected:Optional[Union[str, list[str]]] = None, fact_name:Optional[str] = "traces", message:Optional[str] = None, template_path:Optional[Union[str, Path]] = None, *, template:Optional[dict] = None, min_facts:int = 1, fail_threshold:int = 0, max_facts:Optional[int] = None, testcase:Optional[Union[FluentTestCase, dict]] = None, evidence_scope:Optional[dict] = None) -> 'TraceAssertion':
+    def check_eval(self, eval_name:Optional[Union[str, Path]] = None, expected:Optional[Union[str, list[str]]] = None, not_expected:Optional[Union[str, list[str]]] = None, fact_name:Optional[str] = "traces", message:Optional[str] = None, template_path:Optional[Union[str, Path]] = None, *, template:Optional[dict] = None, min_facts:int = 1, fail_threshold:int = 0, max_facts:Optional[int] = None, testcase:Optional[Union[FluentTestCase, dict]] = None, evidence_scope:Optional[dict] = None, evidence_scope_path:Optional[Union[str, Path]] = None) -> 'TraceAssertion':
         """Validate evaluation results for the current filtered spans.
 
         Provide exactly one of:
@@ -1480,6 +1517,15 @@ class TraceAssertion():
             validation errors (HTTP 400) surface as AssertionError with the prefix
             'Custom template validation failed: <reason>'.
           - template: an inline custom-template dict.
+
+        Evidence scope (which spans/roles/events feed the judge) may be supplied
+        as at most one of:
+          - evidence_scope: an inline dict; or
+          - evidence_scope_path: a JSON file holding that dict (either the bare
+            scope object or the request-body shape ``{"evidence_scope": {...}}``),
+            loaded exactly as ``template_path`` loads a template. It resolves to
+            ``evidence_scope`` and is subject to the same restriction: it is only
+            supported in span mode with a custom template.
 
         When with_trace_source("okahu", start_time=..., end_time=...) has recorded a
         filter scope, this runs the filtered (async job) flow instead of the span
@@ -1495,6 +1541,15 @@ class TraceAssertion():
                 eval_name, expected, not_expected, template_path or template.
         """
         eval_name, template_path = self._apply_eval_type(eval_name, template_path, template)
+
+        # Route 1: an evidence_scope JSON file resolves to the same dict route 2
+        # passes inline. Reject supplying both, then flow through the inline path.
+        if evidence_scope_path is not None:
+            if evidence_scope is not None:
+                raise ValueError(
+                    "Provide 'evidence_scope' (an inline dict) or "
+                    "'evidence_scope_path' (a JSON file), not both.")
+            evidence_scope = self._load_evidence_scope_file(evidence_scope_path)
 
         filter_scope = getattr(self, "_okahu_filter", None)
         # evidence_scope is wired only through the span path (a single custom
